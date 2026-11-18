@@ -6,38 +6,34 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
+import android.text.InputType
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Switch
+import android.widget.Spinner
 import android.widget.TextView
 
 /**
- * Minimal "scanner settings" screen. Each toggle sends a DataWedge SET_CONFIG intent that
- * updates ONE parameter on ONE existing DataWedge profile.
+ * Simple scanner settings screen. It exposes five DataWedge "Barcode input > Configure scanner
+ * settings" options and nothing else. Each change sends a DataWedge SET_CONFIG intent that
+ * updates only that parameter on one existing profile.
  *
- * EDIT THE TWO THINGS BELOW:
- *  1. PROFILE_NAME  - the DataWedge profile your users' app (browser etc.) is associated with.
- *  2. SETTINGS      - the list of toggles to show. One line per setting.
+ * CHANGE PROFILE_NAME below to the DataWedge profile your users' app/browser is associated with.
  *
- * The parameter names/values below are PLACEHOLDERS taken from Zebra's SET_CONFIG docs.
- * Verify each one against the DataWedge version on your scanners before relying on it:
- * https://techdocs.zebra.com/datawedge/latest/guide/api/setconfig/
+ * Parameter names/values: https://techdocs.zebra.com/datawedge/latest/guide/api/setconfig/
+ * Support for each parameter varies by scanner model; test on every model you deploy.
  */
 class MainActivity : Activity() {
 
-    private data class Setting(
-        val label: String,
-        val plugin: String,      // DataWedge plug-in: BARCODE, KEYSTROKE, INTENT...
-        val param: String,       // parameter name inside that plug-in
-        val onValue: String,
-        val offValue: String,
-        val defaultOn: Boolean
-    )
+    /** value == null means "leave unchanged" (nothing is sent). */
+    private class Choice(val label: String, val value: String?)
 
     companion object {
         const val PROFILE_NAME = "WebScanning"   // <-- change to your real profile name
@@ -46,21 +42,46 @@ class MainActivity : Activity() {
         const val DW_RESULT_ACTION = "com.symbol.datawedge.api.RESULT_ACTION"
         const val DW_PACKAGE = "com.symbol.datawedge"
 
-        private val SETTINGS = listOf(
-            Setting("Vibrate on scan", "BARCODE", "decode_haptic_feedback", "true", "false", true),
-            Setting("Code 128", "BARCODE", "decoder_code128", "true", "false", true),
-            Setting("Code 39", "BARCODE", "decoder_code39", "true", "false", true),
-            Setting("QR code", "BARCODE", "decoder_qrcode", "true", "false", true),
-            Setting("Data Matrix", "BARCODE", "decoder_datamatrix", "true", "false", true),
-            Setting("UPC-A", "BARCODE", "decoder_upca", "true", "false", true),
-            Setting("EAN-13", "BARCODE", "decoder_ean13", "true", "false", true),
-            // 13 = send Enter (carriage return) after the scanned text, 0 = send nothing
-            Setting("Press Enter after scan", "KEYSTROKE", "keystroke_action_char", "13", "0", false)
+        const val P_AIM_TIMER = "aim_timer"
+        const val P_AIM_TYPE = "aim_type"
+        const val P_PICKLIST = "picklist"
+        const val P_AUDIO = "decode_audio_feedback_uri"
+        const val P_HAPTIC = "decode_haptic_feedback"
+
+        private val ALL_PARAMS = listOf(P_AIM_TIMER, P_AIM_TYPE, P_PICKLIST, P_AUDIO, P_HAPTIC)
+
+        private val NO_CHANGE = Choice("(no change)", null)
+
+        private val AIM_TYPES = listOf(
+            NO_CHANGE,
+            Choice("Trigger", "0"),
+            Choice("Timed hold", "1"),
+            Choice("Timed release", "2"),
+            Choice("Press and release", "3"),
+            Choice("Presentation", "4"),
+            Choice("Continuous read", "5"),
+            Choice("Press and sustain", "6"),
+            Choice("Press and continue", "7"),
+            Choice("Timed continuous", "8")
+        )
+
+        private val PICKLISTS = listOf(
+            NO_CHANGE,
+            Choice("Disabled", "0"),
+            Choice("Hardware picklist", "1"),
+            Choice("Software picklist", "2")
+        )
+
+        private val HAPTIC = listOf(
+            NO_CHANGE,
+            Choice("On", "true"),
+            Choice("Off", "false")
         )
     }
 
     private lateinit var prefs: SharedPreferences
     private lateinit var status: TextView
+    private var pad = 0
     private var commandCounter = 0
 
     private val resultReceiver = object : BroadcastReceiver() {
@@ -75,8 +96,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        pad = (16 * resources.displayMetrics.density).toInt()
 
-        val pad = (16 * resources.displayMetrics.density).toInt()
+        status = TextView(this).apply { setPadding(0, pad, 0, 0) }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
@@ -86,31 +109,21 @@ class MainActivity : Activity() {
             text = "Scanner settings"
             textSize = 22f
         })
+        root.addView(TextView(this).apply {
+            text = "Shows what you last set here. \"(no change)\" leaves the scanner as it is."
+            setPadding(0, pad / 2, 0, 0)
+        })
 
-        SETTINGS.forEach { s ->
-            root.addView(Switch(this).apply {
-                text = s.label
-                textSize = 18f
-                setPadding(0, pad, 0, pad)
-                isChecked = prefs.getBoolean(s.param, s.defaultOn)
-                setOnCheckedChangeListener { _, on ->
-                    prefs.edit().putBoolean(s.param, on).apply()
-                    send(s, on)
-                }
-            })
-        }
+        addAimTimer(root)
+        addChoice(root, "Aim type", P_AIM_TYPE, AIM_TYPES)
+        addChoice(root, "Picklist mode", P_PICKLIST, PICKLISTS)
+        addChoice(root, "Decode audio feedback", P_AUDIO, loadTones())
+        addChoice(root, "Decode haptic feedback (vibrate)", P_HAPTIC, HAPTIC)
 
         root.addView(Button(this).apply {
             text = "Re-apply all settings"
-            setOnClickListener {
-                SETTINGS.forEach { s -> send(s, prefs.getBoolean(s.param, s.defaultOn)) }
-            }
+            setOnClickListener { reapplyAll() }
         })
-
-        status = TextView(this).apply {
-            gravity = Gravity.START
-            setPadding(0, pad, 0, 0)
-        }
         root.addView(status)
 
         setContentView(ScrollView(this).apply { addView(root) })
@@ -131,17 +144,107 @@ class MainActivity : Activity() {
         unregisterReceiver(resultReceiver)
     }
 
-    /** Update a single parameter on the existing profile; other settings are left untouched. */
-    private fun send(s: Setting, on: Boolean) {
-        val params = Bundle().apply { putString(s.param, if (on) s.onValue else s.offValue) }
+    private fun label(root: LinearLayout, title: String) {
+        root.addView(TextView(this).apply {
+            text = title
+            textSize = 16f
+            setPadding(0, pad, 0, 0)
+        })
+    }
+
+    private fun addAimTimer(root: LinearLayout) {
+        label(root, "Aim timer (0 - 60000)")
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = "no change"
+            setText(prefs.getString(P_AIM_TIMER, ""))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val set = Button(this).apply {
+            text = "Set"
+            setOnClickListener {
+                val n = input.text.toString().toIntOrNull()
+                if (n == null || n !in 0..60000) {
+                    status.text = "Enter a whole number from 0 to 60000."
+                } else {
+                    prefs.edit().putString(P_AIM_TIMER, n.toString()).apply()
+                    sendParams(mapOf(P_AIM_TIMER to n.toString()))
+                }
+            }
+        }
+        row.addView(input)
+        row.addView(set)
+        root.addView(row)
+    }
+
+    private fun addChoice(root: LinearLayout, title: String, param: String, choices: List<Choice>) {
+        label(root, title)
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item, choices.map { it.label }
+        )
+        val saved = prefs.getString(param, null)
+        val start = choices.indexOfFirst { it.value == saved }.let { if (it < 0) 0 else it }
+        spinner.setSelection(start, false)
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                val value = choices[pos].value
+                if (value == null) {
+                    prefs.edit().remove(param).apply()
+                    return
+                }
+                if (value == prefs.getString(param, null)) return  // initial callback, nothing new
+                prefs.edit().putString(param, value).apply()
+                sendParams(mapOf(param to value))
+            }
+
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        root.addView(spinner)
+    }
+
+    /** "Default" (empty string resets the parameter) plus the device's notification sounds. */
+    private fun loadTones(): List<Choice> {
+        val list = mutableListOf(NO_CHANGE, Choice("Default", ""))
+        try {
+            val rm = RingtoneManager(this)
+            rm.setType(RingtoneManager.TYPE_NOTIFICATION)
+            val c = rm.cursor
+            while (c.moveToNext()) {
+                list.add(
+                    Choice(
+                        c.getString(RingtoneManager.TITLE_COLUMN_INDEX),
+                        rm.getRingtoneUri(c.position).toString()
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            // No tone list available: only "(no change)" and "Default" are offered.
+        }
+        return list
+    }
+
+    private fun reapplyAll() {
+        val values = ALL_PARAMS.mapNotNull { p -> prefs.getString(p, null)?.let { p to it } }.toMap()
+        if (values.isEmpty()) {
+            status.text = "Nothing to apply yet."
+        } else {
+            sendParams(values)
+        }
+    }
+
+    /** Update the given BARCODE parameters on the existing profile; everything else is untouched. */
+    private fun sendParams(values: Map<String, String>) {
+        val params = Bundle().apply { values.forEach { (k, v) -> putString(k, v) } }
         val plugin = Bundle().apply {
-            putString("PLUGIN_NAME", s.plugin)
+            putString("PLUGIN_NAME", "BARCODE")
             putString("RESET_CONFIG", "false")
             putBundle("PARAM_LIST", params)
         }
         val main = Bundle().apply {
             putString("PROFILE_NAME", PROFILE_NAME)
-            // CREATE_IF_NOT_EXIST: if the profile exists, only the listed parameters are changed
+            // CREATE_IF_NOT_EXIST: if the profile exists, only the listed parameters change
             putString("CONFIG_MODE", "CREATE_IF_NOT_EXIST")
             putBundle("PLUGIN_CONFIG", plugin)
         }

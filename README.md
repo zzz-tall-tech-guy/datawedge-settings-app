@@ -1,17 +1,36 @@
 # Scanner Settings (DataWedge)
 
-Small Android app that lets users change a handful of DataWedge settings without opening the
-full DataWedge UI. Each toggle sends a DataWedge `SET_CONFIG` intent that updates one parameter
-on one existing profile.
+Small Android app that lets users change five DataWedge settings (Barcode input > Configure
+scanner settings) without opening the full DataWedge UI:
+
+| Setting                  | DataWedge parameter          | Control                        |
+|--------------------------|------------------------------|--------------------------------|
+| Aim timer                | `aim_timer` (0 - 60000)      | Number box + Set button        |
+| Aim type                 | `aim_type` (0 - 8)           | Dropdown                       |
+| Picklist mode            | `picklist` (0 - 2)           | Dropdown                       |
+| Decode audio feedback    | `decode_audio_feedback_uri`  | Dropdown of system tones       |
+| Decode haptic feedback   | `decode_haptic_feedback`     | Dropdown: On / Off             |
+
+Each change sends a DataWedge `SET_CONFIG` intent that updates only that one parameter on one
+existing profile. Reference:
+https://techdocs.zebra.com/datawedge/latest/guide/api/setconfig/
 
 ## Customize
 
 Edit `app/src/main/java/com/example/dwsettings/MainActivity.kt`:
 
-- `PROFILE_NAME` - the DataWedge profile that your users' app/browser is associated with.
-- `SETTINGS` - one line per toggle. The parameter names are placeholders from Zebra's docs;
-  verify them against your DataWedge version:
-  https://techdocs.zebra.com/datawedge/latest/guide/api/setconfig/
+- `PROFILE_NAME` - the DataWedge profile your users' app/browser is associated with.
+
+## Known limits / things to verify on a real scanner
+
+- The screen shows what was last set from this app, not a live read of the profile. A dropdown
+  shows "(no change)" until someone picks a value.
+- "Default" under audio feedback sends an empty string, which per Zebra resets the parameter to
+  its default. How to switch the beep fully OFF still needs testing on a device.
+- Support for these parameters varies by scanner model; the docs point to each device's
+  Integrator Guide. Test on every model you deploy.
+- The units/behaviour of the aim timer depend on the aim type and scanner. Check Zebra's
+  reader-parameters docs.
 
 ## Build
 
